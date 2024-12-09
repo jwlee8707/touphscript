@@ -1,0 +1,199 @@
+diff --git a/src/characters.h b/src/characters.h
+new file mode 100644
+index 0000000..ccccccc
+--- /dev/null
++++ b/src/characters.h
+@@ -0,0 +1,39 @@
++#ifndef CHARACTERS_H
++#define CHARACTERS_H
++
++#include <string>
++#include <vector>
++
++// chars.txt를 로드하여 FF7 코드와 문자열 매핑을 구축
++bool loadChars(const std::string &filename);
++
++// 데이터(FF7 인코딩)에서 pos 위치부터 최대 2바이트를 읽어 문자를 디코드
++// consumed에는 사용한 바이트 수를 기록
++std::string decodeSequence(const unsigned char *data, size_t length, size_t pos, size_t &consumed);
++
++// UTF-8 문자열(한 글자)을 FF7 코드로 인코드
++// out 버퍼에 인코딩된 코드 저장, 반환값은 사용한 바이트 수
++size_t encodeSequence(const std::string &ch, unsigned char *out, size_t outlen);
++
++class Characters {
++public:
++    Characters();
++    void load(const std::string &fname);
++};
++
++#endif
+
+diff --git a/src/characters.cpp b/src/characters.cpp
+new file mode 100644
+index 0000000..ddddddd
+--- /dev/null
++++ b/src/characters.cpp
+@@ -0,0 +1,214 @@
++#include "characters.h"
++#include <fstream>
++#include <iostream>
++#include <sstream>
++#include <map>
++#include <vector>
++#include <algorithm>
++#include <cctype>
++
++static std::map<std::vector<unsigned char>, std::string> charMap;           // FF7코드->문자
++static std::map<std::string, std::vector<unsigned char>> reverseCharMap;    // 문자->FF7코드
++
++Characters::Characters() {
++}
++
++void Characters::load(const std::string &fname) {
++    loadChars(fname);
++}
++
++static std::vector<std::string> split(const std::string &str, char delim) {
++    std::vector<std::string> tokens;
++    std::stringstream ss(str);
++    std::string token;
++    while (std::getline(ss, token, delim)) {
++        if (!token.empty()) {
++            tokens.push_back(token);
++        }
++    }
++    return tokens;
++}
++
++bool loadChars(const std::string &filename) {
++    std::ifstream infile(filename.c_str());
++    if(!infile.is_open()){
++        std::cerr << "Could not open " << filename << std::endl;
++        return false;
++    }
++
++    std::string line;
++    while(std::getline(infile, line)) {
++        if(line.empty() || line[0] == '#')
++            continue;
++
++        size_t eqPos = line.find('=');
++        if(eqPos == std::string::npos)
++            continue;
++
++        std::string codePart = line.substr(0, eqPos);
++        std::string charStr = line.substr(eqPos + 1);
++
++        // "C0 1A" -> ["C0", "1A"]
++        std::vector<std::string> codeTokens = split(codePart, ' ');
++        if (codeTokens.empty()) continue;
++
++        std::vector<unsigned char> codeBytes;
++        for (auto &ct : codeTokens) {
++            unsigned int val;
++            std::stringstream hexStream;
++            hexStream << std::hex << ct;
++            if (!(hexStream >> val)) {
++                codeBytes.clear();
++                break;
++            }
++            codeBytes.push_back(static_cast<unsigned char>(val));
++        }
++
++        if (!codeBytes.empty()) {
++            charMap[codeBytes] = charStr;
++            reverseCharMap[charStr] = codeBytes;
++        }
++    }
++
++    infile.close();
++    return true;
++}
++
++std::string decodeSequence(const unsigned char *data, size_t length, size_t pos, size_t &consumed) {
++    // 최대 2바이트 시퀀스 확인
++    for (int seqLen = 2; seqLen > 0; seqLen--) {
++        if (pos + seqLen <= length) {
++            std::vector<unsigned char> seq(data+pos, data+pos+seqLen);
++            auto it = charMap.find(seq);
++            if (it != charMap.end()) {
++                consumed = seqLen;
++                return it->second;
++            }
++        }
++    }
++    // 매칭 실패 시, 1바이트 소비 후 '?' 리턴
++    consumed = 1;
++    return "?";
++}
++
++size_t encodeSequence(const std::string &ch, unsigned char *out, size_t outlen) {
++    auto it = reverseCharMap.find(ch);
++    if (it != reverseCharMap.end()) {
++        const std::vector<unsigned char> &code = it->second;
++        if (code.size() <= outlen) {
++            for (size_t i=0; i<code.size(); i++) {
++                out[i] = code[i];
++            }
++            return code.size();
++        }
++    }
++    // 매칭 실패 시 '?' 사용
++    if (outlen > 0) {
++        out[0] = '?';
++        return 1;
++    }
++    return 0;
++}
+
+diff --git a/src/text.cpp b/src/text.cpp
+new file mode 100644
+index 0000000..eeeeeee
+--- /dev/null
++++ b/src/text.cpp
+@@ -0,0 +1,101 @@
++#include "text.h"
++#include "characters.h"
++#include <string>
++#include <vector>
++
++// 바이너리 데이터를 문자열로 디코딩하는 예제 함수
++// 실제 TouphScript 코드에 있는 decode_text (또는 유사 함수명) 부분을 이 로직으로 대체
++std::string decode_text(const unsigned char *data, size_t length) {
++    std::string out;
++    size_t pos = 0;
++    while (pos < length) {
++        size_t consumed = 0;
++        std::string ch = decodeSequence(data, length, pos, consumed);
++        out += ch;
++        pos += consumed;
++    }
++    return out;
++}
++
++// 문자열을 FF7 코드로 인코딩하는 예제 함수
++// 실제 구현에서는 UTF-8 디코딩을 통해 한글 한 글자 단위로 ch를 추출한 뒤 encodeSequence에 전달해야 한다.
++std::vector<unsigned char> encode_text(const std::string &text) {
++    std::vector<unsigned char> out;
++    size_t i = 0;
++    while (i < text.size()) {
++        // 간단한 가정: 3바이트 UTF-8을 한글 한 글자로 처리
++        unsigned char c = (unsigned char)text[i];
++        std::string oneChar;
++        if ((c & 0xE0) == 0xE0 && i+2 < text.size()) {
++            oneChar = text.substr(i, 3);
++            i += 3;
++        } else {
++            oneChar = text.substr(i,1);
++            i++;
++        }
++
++        unsigned char buffer[4];
++        size_t encodedLen = encodeSequence(oneChar, buffer, sizeof(buffer));
++        for (size_t b=0; b<encodedLen; b++) {
++            out.push_back(buffer[b]);
++        }
++    }
++    return out;
++}
